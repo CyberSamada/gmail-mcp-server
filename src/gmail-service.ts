@@ -324,6 +324,115 @@ export class GmailService {
     return this.listEmails(query, maxResults);
   }
 
+
+  // -----------------------------------------------------------------------
+  // getAttachment — download an email attachment as base64
+  // -----------------------------------------------------------------------
+  async getAttachment(
+    messageId: string,
+    options: { attachmentId?: string; filename?: string }
+  ): Promise<{ attachmentId: string; size: number; base64: string; filename?: string }> {
+    let { attachmentId, filename } = options;
+
+    if (!attachmentId && filename) {
+      const res = await this.gmail.users.messages.get({ userId: "me", id: messageId, format: "full" });
+      const findPart = (parts: gmail_v1.Schema$MessagePart[]): gmail_v1.Schema$MessagePart | null => {
+        for (const part of parts) {
+          if (part.filename?.toLowerCase() === filename!.toLowerCase()) return part;
+          if (part.parts) { const f = findPart(part.parts); if (f) return f; }
+        }
+        return null;
+      };
+      const part = findPart(res.data.payload?.parts ?? []);
+      if (!part) throw new Error("No attachment named \"" + filename + "\" found in message " + messageId);
+      attachmentId = part.body?.attachmentId ?? part.partId ?? undefined;
+      filename = part.filename ?? undefined;
+    }
+
+    if (!attachmentId) throw new Error("Must supply either attachmentId or filename");
+
+    const resp = await this.gmail.users.messages.attachments.get({ userId: "me", messageId, id: attachmentId });
+    const data = resp.data.data;
+    if (!data) throw new Error("Attachment data is empty");
+
+    return {
+      attachmentId,
+      size: resp.data.size ?? 0,
+      base64: data.replace(/-/g, "+").replace(/_/g, "/"),
+      filename,
+    };
+  }
+
+  // -----------------------------------------------------------------------
+  // removeLabel — remove a label / star from an email
+  // -----------------------------------------------------------------------
+  async removeLabel(
+    messageId: string,
+    labelName: string
+  ): Promise<{ success: boolean; labelId: string }> {
+    const SYSTEM = new Set([
+      "STARRED","UNREAD","INBOX","SENT","TRASH","SPAM","IMPORTANT",
+      "BLUE_STAR","GREEN_CIRCLE","RED_CIRCLE","ORANGE_GUILLEMET",
+      "GREEN_CHECK","BLUE_INFO","RED_BANG","YELLOW_BANG",
+    ]);
+    let labelId: string;
+    if (SYSTEM.has(labelName.toUpperCase())) {
+      labelId = labelName.toUpperCase();
+    } else {
+      const res = await this.gmail.users.labels.list({ userId: "me" });
+      const match = (res.data.labels ?? []).find(l => l.name?.toLowerCase() === labelName.toLowerCase());
+      if (!match?.id) throw new Error("Label \"" + labelName + "\" not found");
+      labelId = match.id;
+    }
+    await this.gmail.users.messages.modify({ userId: "me", id: messageId, requestBody: { removeLabelIds: [labelId] } });
+    return { success: true, labelId };
+  }
+
+  // -----------------------------------------------------------------------
+  // sendEmail — compose and send an email from this account
+  // -----------------------------------------------------------------------
+  async sendEmail(
+    to: string,
+    subject: string,
+    body: string,
+    options?: { cc?: string; replyToMessageId?: string }
+  ): Promise<{ success: boolean; messageId: string; threadId?: string }> {
+    let threadId: string | undefined;
+    const extra: string[] = [];
+
+    if (options?.replyToMessageId) {
+      const orig = await this.gmail.users.messages.get({
+        userId: "me", id: options.replyToMessageId, format: "metadata",
+        metadataHeaders: ["Message-ID", "References"],
+      });
+      threadId = orig.data.threadId ?? undefined;
+      const msgId = (orig.data.payload?.headers ?? []).find(h => h.name === "Message-ID")?.value;
+      const refs  = (orig.data.payload?.headers ?? []).find(h => h.name === "References")?.value;
+      if (msgId) {
+        extra.push("In-Reply-To: " + msgId);
+        extra.push("References: " + (refs ? refs + " " + msgId : msgId));
+      }
+    }
+
+    const headers = [
+      "To: " + to,
+      "Subject: " + subject,
+      "MIME-Version: 1.0",
+      "Content-Type: text/plain; charset=utf-8",
+      ...extra,
+      ...(options?.cc ? ["Cc: " + options.cc] : []),
+    ].join("\r\n");
+
+    const raw = Buffer.from(headers + "\r\n\r\n" + body)
+      .toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+
+    const resp = await this.gmail.users.messages.send({
+      userId: "me",
+      requestBody: { raw, ...(threadId ? { threadId } : {}) },
+    });
+    return { success: true, messageId: resp.data.id!, threadId: resp.data.threadId ?? undefined };
+  }
+
   // -----------------------------------------------------------------------
   // Helpers
   // -----------------------------------------------------------------------
