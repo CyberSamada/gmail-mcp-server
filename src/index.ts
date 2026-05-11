@@ -331,6 +331,58 @@ function createMcpServer(): McpServer {
     }
   );
 
+  // ---- get_attachment ----
+  server.tool(
+    "get_attachment",
+    "Download an email attachment and return it as base64. Pass the base64 data to Drive to upload the file.",
+    {
+      account:       z.string().describe("Email address of the account this message belongs to"),
+      message_id:    z.string().describe("The Gmail message ID"),
+      attachment_id: z.string().optional().describe("The attachment part ID from get_email"),
+      filename:      z.string().optional().describe("Attachment filename (alternative to attachment_id)"),
+    },
+    async ({ account, message_id, attachment_id, filename }) => {
+      const gmail = await getGmailServiceForAccount(account);
+      const result = await gmail.getAttachment(message_id, { attachmentId: attachment_id, filename });
+      return { content: [{ type: "text" as const, text: JSON.stringify({ account, message_id, ...result }, null, 2) }] };
+    }
+  );
+
+  // ---- remove_label ----
+  server.tool(
+    "remove_label",
+    "Remove a label or star from an email. Supports system labels: STARRED, BLUE_STAR, GREEN_CIRCLE, RED_CIRCLE, UNREAD, INBOX.",
+    {
+      account:    z.string().describe("Email address of the account this message belongs to"),
+      message_id: z.string().describe("The Gmail message ID"),
+      label_name: z.string().describe("Label to remove (e.g. STARRED, BLUE_STAR, GREEN_CIRCLE, RED_CIRCLE, or custom label name)"),
+    },
+    async ({ account, message_id, label_name }) => {
+      const gmail = await getGmailServiceForAccount(account);
+      const result = await gmail.removeLabel(message_id, label_name);
+      return { content: [{ type: "text" as const, text: JSON.stringify({ account, message_id, label_name, ...result }) }] };
+    }
+  );
+
+  // ---- send_email ----
+  server.tool(
+    "send_email",
+    "Compose and send an email from the specified Gmail account. Supports plain text, CC, and thread replies.",
+    {
+      account:             z.string().describe("Gmail account to send from"),
+      to:                  z.string().describe("Recipient email address"),
+      subject:             z.string().describe("Email subject line"),
+      body:                z.string().describe("Email body (plain text)"),
+      cc:                  z.string().optional().describe("CC email address (optional)"),
+      reply_to_message_id: z.string().optional().describe("Gmail message ID to reply to, keeps the thread (optional)"),
+    },
+    async ({ account, to, subject, body, cc, reply_to_message_id }) => {
+      const gmail = await getGmailServiceForAccount(account);
+      const result = await gmail.sendEmail(to, subject, body, { cc, replyToMessageId: reply_to_message_id });
+      return { content: [{ type: "text" as const, text: JSON.stringify({ account, to, subject, ...result }, null, 2) }] };
+    }
+  );
+
   return server;
 }
 
